@@ -49,3 +49,7 @@ junie/
 .codex/
 .cursor/
 .mcp.json
+
+# Claude Code scratch
+.claude/reviews/
+.claude/worktrees/
