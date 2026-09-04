@@ -40,6 +40,11 @@ class Rule extends DERule
     /** @var float $reduced_tax_rate */
     public float $reduced_tax_rate = 0;
 
-    public string $tax_name1 = 'НДС';
+    // payware: upstream ships 'НДС', which is Russian. Bulgarian is 'ДДС'. The name set here
+    // is copied into $tax_name by init() and reaches the line table and the totals block of
+    // every invoice this rule rates, because calculateRates() only overrides it in the
+    // over-threshold B2C branch - which a seller under the 10 000 EUR OSS threshold never
+    // enters. Verified on rendered documents 2026-09-04.
+    public string $tax_name1 = 'ДДС';
 
 }
