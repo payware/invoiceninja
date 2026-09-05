@@ -125,7 +125,7 @@ class Helpers
 
             $custom_field_parts = explode('|', $custom_field);
 
-            return $custom_field_parts[0];
+            return $this->translateCustomFieldLabel($custom_field_parts[0]);
         }
 
         $field = str_replace(["quote","credit"], ["invoice", "invoice"], $field);
@@ -135,10 +135,40 @@ class Helpers
 
             $custom_field_parts = explode('|', $custom_field);
 
-            return $custom_field_parts[0];
+            return $this->translateCustomFieldLabel($custom_field_parts[0]);
         }
 
         return '';
+    }
+
+    /**
+     * payware: a custom-field label that is a translation key is translated.
+     *
+     * <p>A custom field's label is one string on the company and an invoice is written in one
+     * language throughout, so a Bulgarian label reached a Spanish invoice - `Данъчно събитие`
+     * above a date on an otherwise Spanish page. InvoiceNinja has no per-language custom
+     * field label and no way for a design to call the translator.
+     *
+     * A label of the form `pw_something` is looked up in the language pack instead, in the
+     * locale the document is being rendered in. Anything else is returned unchanged, so every
+     * label anyone has already typed keeps working. The keys are added by
+     * `billing/lang-overrides/apply-translations.sh`; a key that is missing falls back to the
+     * label as written rather than printing a blank heading over a value.
+     *
+     * This also gives a design a localized word it could not otherwise have:
+     * `$invoice.customN_label` is substituted into the design body and footer, so a static
+     * caption like Съставил / Drawn up by / Preparado por can ride on a custom field that is
+     * never printed as a value.
+     */
+    private function translateCustomFieldLabel(string $label): string
+    {
+        if (! str_starts_with($label, 'pw_')) {
+            return $label;
+        }
+
+        $translated = ctrans("texts.{$label}");
+
+        return ($translated === "texts.{$label}" || $translated === '') ? $label : $translated;
     }
 
     /**
