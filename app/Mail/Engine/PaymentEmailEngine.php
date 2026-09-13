@@ -20,7 +20,6 @@ use App\Models\Payment;
 use Illuminate\Support\Str;
 use App\Utils\Traits\MakesHash;
 use App\Utils\Traits\MakesDates;
-use App\Jobs\Entity\CreateRawPdf;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\Cache;
@@ -102,8 +101,6 @@ class PaymentEmailEngine extends BaseEmailEngine
 
         if ($this->client->getSetting('pdf_email_attachment') !== false && $this->company->account->hasFeature(Account::FEATURE_PDF_ATTACHMENT)) {
 
-            $template_in_use = false;
-
             if ($this->is_refund && \App\Models\Design::where('id', $this->decodePrimaryKey($this->payment->client->getSetting('payment_refund_design_id')))->where('is_template', true)->exists()) {
                 $pdf = (new TemplateAction(
                     [$this->payment->hashed_id],
@@ -119,8 +116,6 @@ class PaymentEmailEngine extends BaseEmailEngine
                 $file_name = ctrans('texts.payment_refund_receipt', ['number' => $this->payment->number ]) . '.pdf';
                 $file_name = str_replace(' ', '_', $file_name);
                 $this->setAttachments([['file' => base64_encode($pdf), 'name' => $file_name]]);
-                $template_in_use = true;
-
             } elseif (!$this->is_refund && \App\Models\Design::where('id', $this->decodePrimaryKey($this->payment->client->getSetting('payment_receipt_design_id')))->where('is_template', true)->exists()) {
                 $pdf = (new TemplateAction(
                     [$this->payment->hashed_id],
@@ -136,17 +131,33 @@ class PaymentEmailEngine extends BaseEmailEngine
                 $file_name = ctrans('texts.payment_receipt', ['number' => $this->payment->number ]) . '.pdf';
                 $file_name = str_replace(' ', '_', $file_name);
                 $this->setAttachments([['file' => base64_encode($pdf), 'name' => $file_name]]);
-                $template_in_use = true;
-
             }
 
-            $this->payment->invoices->each(function ($invoice) use ($template_in_use) {
-
-                if (!$template_in_use) {
-                    $pdf = ((new CreateRawPdf($invoice->invitations->first()))->handle());
-                    $file_name = $invoice->numberFormatter() . '.pdf';
-                    $this->setAttachments([['file' => base64_encode($pdf), 'name' => $file_name]]);
-                }
+            /**
+             * payware: a payment confirmation carries no invoice.
+             *
+             * Upstream falls back to re-attaching every invoice on the payment when no
+             * receipt design is configured. A client emailed invoice 0000000009 an hour
+             * earlier then receives the identical PDF again under "Получено плащане", which
+             * reads as a second invoice rather than a confirmation - and an accountant who
+             * files both has booked the expense twice.
+             *
+             * The invoice is the данъчен документ and the client already has it. A
+             * confirmation only has to say what was paid, when, and against which invoice;
+             * the body does that, which is the shape Stripe, Paddle and AWS all use. Nothing
+             * this class can generate is a фискален бон, so there is no document the
+             * email is obliged to carry.
+             *
+             * Two things are deliberately left alone. A configured
+             * `payment_receipt_design_id` still attaches its receipt above: that is an
+             * explicit choice by the operator, and what was wrong was substituting a
+             * different document when they had not made it. And `document_email_attachment`
+             * still sends the invoice's own documents, which are files someone attached on
+             * purpose rather than a copy of the invoice itself.
+             *
+             * Refunds take the same path and the same argument applies to them.
+             */
+            $this->payment->invoices->each(function ($invoice) {
 
                 //attach invoice documents also to payments
                 if ($this->client->getSetting('document_email_attachment') !== false) {
@@ -302,6 +313,23 @@ class PaymentEmailEngine extends BaseEmailEngine
 
         $data['$company.logo'] = ['value' => $logo ?: '&nbsp;', 'label' => ctrans('texts.logo')];
         $data['$company_logo'] = &$data['$company.logo'];
+
+        /**
+         * payware: `$company.logo_url` exists in HtmlEngine and is missing here.
+         *
+         * The shared email wrapper (`email_style_custom`) is written against HtmlEngine's
+         * variables, because that is the engine an invoice email goes through. Keys are
+         * replaced longest-first, and `$company.logo` is a key while `$company.logo_url` was
+         * not - so in a payment email the wrapper's src="$company.logo_url" resolved to the
+         * logo URL with a literal `_url` glued onto the end, and the logo was broken in every
+         * payment confirmation ever sent. Verified on 2026-09-12 by running the engine's own
+         * substitution over the stored wrapper.
+         *
+         * Aliased rather than recomputed. HtmlEngine draws the two apart because its
+         * `$company.logo` is base64 on a self-hosted install while `logo_url` is the plain
+         * URL; here `$logo` is already that plain URL, so both names mean the same thing.
+         */
+        $data['$company.logo_url'] = &$data['$company.logo'];
         $data['$company1'] = ['value' => $this->helpers->formatCustomFieldValue($this->company->custom_fields, 'company1', $this->settings->custom_value1, $this->client) ?: '&nbsp;', 'label' => $this->helpers->makeCustomField($this->company->custom_fields, 'company1')];
         $data['$company2'] = ['value' => $this->helpers->formatCustomFieldValue($this->company->custom_fields, 'company2', $this->settings->custom_value2, $this->client) ?: '&nbsp;', 'label' => $this->helpers->makeCustomField($this->company->custom_fields, 'company2')];
         $data['$company3'] = ['value' => $this->helpers->formatCustomFieldValue($this->company->custom_fields, 'company3', $this->settings->custom_value3, $this->client) ?: '&nbsp;', 'label' => $this->helpers->makeCustomField($this->company->custom_fields, 'company3')];
@@ -326,6 +354,21 @@ class PaymentEmailEngine extends BaseEmailEngine
         $data['$invoice.po_number'] = ['value' => $this->formatPoNumber(), 'label' => ctrans('texts.po_number')];
         $data['$poNumber'] = &$data['$invoice.po_number'];
         $data['$payment.status'] = ['value' => $this->payment->stringStatus($this->payment->status_id), 'label' => ctrans('texts.payment_status')];
+
+        /**
+         * payware: the method, which this engine did not expose.
+         *
+         * A receipt has to say how it was paid - it is the line a payer actually recognises,
+         * and the reason Stripe's own receipt leads with "Visa ····4242". The data was always
+         * there (`payment_types`, localized through `translatedType()`); only the variable was
+         * missing, so the template had nothing to print but `$transaction_reference` - which
+         * is whichever system recorded the payment: `ch_…` for a card taken in the portal,
+         * `pi_…` for a direct debit settled by webhook, and an ERPNext Payment Entry name for
+         * a wire. Three internal ids, none of them meaningful to the client, and the last of
+         * them our own accounting document numbering.
+         */
+        $data['$payment.type'] = ['value' => $this->payment->translatedType() ?: '&nbsp;', 'label' => ctrans('texts.payment_type_id')];
+        $data['$payment.method'] = &$data['$payment.type'];
         $data['$invoices.amount'] = ['value' => $this->formatInvoiceField('amount'), 'label' => ctrans('texts.invoices')];
         $data['$invoices.balance'] = ['value' => $this->formatInvoiceField('balance'), 'label' => ctrans('texts.invoices')];
         $data['$invoices.due_date'] = ['value' => $this->formatInvoiceField('due_date'), 'label' => ctrans('texts.invoices')];
