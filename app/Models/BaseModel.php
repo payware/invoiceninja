@@ -217,6 +217,12 @@ class BaseModel extends Model
 
     public function numberFormatter()
     {
+        // payware: <Type>_<Number>_<YYYY-MM-DD>_<Issuer>_<Receiver> for the documents we
+        // send - invoices, credit notes, quotes, purchase orders. App\Utils\PaywareFileName.
+        if ($payware = \App\Utils\PaywareFileName::for($this)) {
+            return $payware;
+        }
+
         $number = strlen($this->number ?? '') >= 1 ? $this->translate_entity() . "_" . $this->number : class_basename($this) . "_" . Str::random(5);
 
         $formatted_number =  mb_ereg_replace("([^\w\s\d\-_~,;\[\]\(\).])", '', $number);
